@@ -63,14 +63,6 @@ Computing Machinery]
 \@DeclareACMFormat{sigchi}
 \@DeclareACMFormat{sigchi-a}
 \ExecuteOptionsX{format}
-\define@boolkey+{acmart.cls}[@ACM@]{ktdraft}[true]{%
-  \if@ACM@ktdraft
-    \PackageInfo{\@classname}{Using ktdraft mode}%
-  \else
-    \PackageInfo{\@classname}{Not using ktdraft mode}%
-  \fi}{\PackageError{\@classname}{The option ktdraft can be either true or
-    false}}
-\ExecuteOptionsX{ktdraft=false}
 \define@boolkey+{acmart.cls}[@ACM@]{screen}[true]{%
   \if@ACM@screen
     \PackageInfo{\@classname}{Using screen mode}%
@@ -1576,8 +1568,6 @@ Computing Machinery]
        \fi
      \fi
   \fi
-\if@ACM@ktdraft
-\else
   \footnotetextcopyrightpermission{%
     \if@ACM@authordraft
         \raisebox{-2ex}[\z@][\z@]{\makebox[0pt][l]{\large\bfseries
@@ -1627,7 +1617,6 @@ Computing Machinery]
           \fi
         \fi
       \fi}
-\fi
   \endgroup
   \setcounter{footnote}{0}%
   \@mkabstract
