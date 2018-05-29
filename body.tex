@@ -1,0 +1,284 @@
+\section{Introduction}
+
+Recently, launching web services on cloud computing infrastructure is getting more popular.
+Launching web services on the cloud is easier than launching them on on-premise data centers.
+A web service on the cloud becomes scalable, which means it can accommodate a large amount of traffic from the Internet by increasing the number of web servers, on demand.
+To distribute high volume traffic from the Internet to thousands of web servers load balancers are often used.
+Major cloud providers have developed software load balancers\cite{eisenbud2016maglev,patel2013ananta} as part of their infrastructures, which they claim to have a high-performance level and scalability.
+In the case of on-premise data centers, one can use proprietary hardware load balancers.
+The actual implementation and the performance level of those existing load balancers are very different.
+
+As for another issue to address regarding web services,
+there are also needs to use multiple of cloud providers or on-premise data centers seamlessly, which spread across the world, to prepare for the disaster, to lower the cost or to comply with the legal requirement.
+Linux container technology\cite{menage2007adding} facilitates these usages by providing container cluster management system as a middleware,
+where one can deploy a web service that consists of a cluster of containers without modification even on different infrastructures.
+However, in reality, it is difficult to do so, because existing load balancers are very different and are not included in the container cluster management system.
+Therefore, users should always manually adjust their web services to the infrastructure.
+
+In short, there exist several software load balancers that are specific to cloud vendors and on-premise data centers.
+The differences among them are the major obstacles to provide uniform container cluster platform, which is necessary to realize web service migration across the different cloud providers and on-premise data centers.
+
+To address this problem, we propose a portable and scalable software load balancer that can be used in any environment including cloud providers and in on-premise data centers.
+We can include this load balancer as a part of a container cluster management system, which acts as a common middleware on which web services run.
+Users now do not need manual adjustment of their services to the infrastructures.
+We will implement the proposed software load balancer using following technologies;
+1) To make the load balancer usable in any environment, we containerize it using Linux container technology\cite{menage2007adding}.
+2) To make the load balancer scalable, we make it capable of being run in parallel using Equal Cost Multi-Path(ECMP) technique\cite{al2008scalable}.
+3) To make the load balancer’s performance level meet the need for 10Gbps network speed, we implement the load balancer using eXpress Data Plane(XDP) technology\cite{bertin2017xdp}.
+By providing container cluster management system including the proposed load balancer, we also aim to demonstrate migration capability, where one can migrate a web application across the different cloud providers and on-premise data centers, all over the world, with one push button.
+
+The outcome of our study will benefit users who want to deploy their web services on any cloud provider where no scalable load balancer is provided, to achieve high scalability.
+Moreover, the result of our study will also benefit users who want to use a group of different cloud providers and on-premise data centers across the globe, as if it were a single computer on which their web services run.
+
+The rest of the paper is organized as follows.
+Section \ref{Related Work} highlights work that deals specifically with container cluster migration, 
+software load balancer containerization, and load balancer related tools within the context of the container technology. 
+Section \ref{Architecture} will explain existing architecture problems and propose our solutions.
+In Section \ref{Experiments}, experimental conditions and results are discussed,  
+which is followed by a summary of our work in Section~\ref{Conclusions}.
+
+\section{Related Work}\label{Related Work}
+
+This section highlights related work, especially that dealing with container cluster migration, 
+software load balancer containerization, load balancer tools within the context of the container technology, 
+and scalable load balancer in the cloud providers.
+
+\paragraph{\bf Container cluster migration:}
+
+Kubernetes developers are trying to add federation\cite{K8sFederation2017} capability for handling situations 
+where multiple Kubernetes clusters\footnote{The {\em Kubernetes cluster} refers to a server cluster 
+controlled by the Kubernetes container management system, in this paper.} 
+are deployed on multiple cloud providers or on-premise data centers, 
+and are managed via the Kubernetes federation API server (federation-apiserver). 
+However, how each Kubernetes cluster is run on different types of cloud providers
+and/or on-premise data centers, especially when the load balancers of such environments are not supported by Kubernetes, 
+seems beyond the scope of that project. 
+The main scope of this paper is to make Kubernetes usable in environments 
+without supported load balancers by providing a containerized software load balancer.
+
+\paragraph{\bf Software load balancer containerization:}
+As far as load balancer containerization is concerned, the following related work has been identified:
+Nginx-ingress\cite{Pleshakov2016,NginxInc2016} utilizes the ingress\cite{K8sIngress2017} capability of Kubernetes, 
+to implement containerized Nginx proxy as a load balancer. Nginx itself is famous as a high-performance web server program
+that also has the functionality of a Layer-7 load balancer. Nginx is capable of handling Transport Layer Security(TLS) encryption, 
+as well as Uniform Resource Identifier(URI) based switching. However, the flip side of Nginx is that it is much slower than Layer-4 switching.
+We compared the performance between Nginx as a load balancer and our proposed load balancer in this paper.
+%
+Meanwhile, the kube-keepalived-vip\cite{Prashanth2016} project is trying to use Linux kernel's IPVS\cite{Zhang2000} 
+load balancer capabilities by containerizing the keepalived\cite{ACassen2016}.
+The kernel IPVS function is set up in the host OS's net name spaces and is shared among multiple web services,
+as if it is part of the Kubernetes cluster infrastructure.
+Our approach differs in that the IPVS rules are set up in container's net name spaces 
+and function as a part of the web service container cluster itself.
+The load balancers are configurable one by one, and are  movable with the cluster once the migration is needed.
+The kube-keepalived-vip's approach lacks flexibility and portability whereas ours provide them.
+%
+The swarm mode of the Docker\cite{DockerCoreEngineering2016,DockerInc2017} also uses IPVS for internal load balancing,
+but it is also considered as part of Docker swarm infrastructure, 
+and thus lacks the portability that our proposal aims to provide.
+
+\paragraph{\bf Load balancer tools in the container context:}
+There are several other projects where efforts have been made to utilize IPVS in the context of container environment.
+For example, GORB\cite{Sibiryov2015} and clusterf\cite{Aaltodoc:http://urn.fi/URN:NBN:fi:aalto-201611025433} are daemons 
+that setup IPVS rules in the kernel inside the Docker container. 
+They utilize running container information stored in key-value storages
+like Core OS etcd\cite{CoreOSEtcd} and HashiCorp's Consul\cite{HashiCorpConsul}. 
+Although these were usable to implement a containerized load balancer in our proposal, we did not use them, 
+since Kubernetes ingress framework already provided the methods to retrieve running container information through standard API.
+
+%\paragraph{\bf Cloud load balancers:}
+%Google maglev\cite{eisenbud2016maglev}
+%Microsoft Ananta\cite{patel2013ananta}
+
+\section{Proposed Architecture}\label{Architecture}
+
+\subsection{Overview}\label{Network}
+Here we discuss overall architecture of the proposed load balancer.
+\begin{figure}
+\includegraphics[width=\columnwidth]{Figs/google_lb}
+\caption{Conventional architecture. Software load balancers are set up via cloud API. }
+\label{fig:google_lb}
+\end{figure}
+Figure~\ref{fig:google_lb} show conventional architecture of the container cluster infrastructure, e.g. Kubernetes.
+Below the dotted line, there are node linux machines that hosts containers, which is controled by Kubernetes.
+Avobe the dotted line, there are SLBs and the Core router.
+All the equipements and software entities are controled by base cloud infrastructure.
+
+Upon launch of the container clusters, SLBs are set up by the cloud infrastructure.
+At the same time iptables DNAT rule's are set up on each of the node linux machines.
+These SLBs distribute incoming traffic to every node that hosts containers.
+The traffic is then distributed again to destination containers using iptables destination 
+network address translation (DNAT)\cite{MartinA.Brown2017,Marmol2015} rules in a round-robin manner. 
+
+\begin{figure}
+\includegraphics[width=\columnwidth]{Figs/new_lb}
+\caption{Proposed architecture. Routing table of the Core Router is updated via BGP.}
+\label{fig:new_lb}
+\end{figure}
+
+Figure~\ref{fig:google_lb} shows proposed architecture.
+Upon launch of the container clusters, Software Load Balancers(SLBs) are also launched as a part of the container cluster.
+Then, the SLBs comunicate with the Core router using the Border Gateway Protocol(BGP)\cite{rekhter2005border} to update routing table.
+The core router evenly distributes the incoming traffic to SLBs, then the SLB directly forward the traffic to destination containers.
+
+The big differences between the conventinal architecture and the proposed ones are;
+a) iptables DNAT load balancing layer does not exist in the latter,
+b) while the comunication between the Kubernetes and the cloud provider is the vendor specific API requests to setup the external SLBs in the conventinal architecture, the comunication between the Kubernetes and the cloud provider is standerd BGP protocol in the proposed architecture.
+
+In other words, the proposed architecure is better than the conventional one, because it eliminates one extra network hop and cummunicate with extra world using standard protocol.
+And also because the SLBs are containerized and are the part of the cluster, a service can deployed in any environment including on-premise datacenters, if only the Core router permits the update of its routing table via BGP.
+This will greately improve the portability compared to the conventional architecture where the support for vendor specific API is always required.
+
+\subsection{Containerization}\label{IPVS}
+
+Here we discuss containerization of a software load balancer.
+We designed the proposed load balancer using three components, IPVS, keepalived, and a controller. 
+These components are placed in a Docker container image.
+The IPVS is a Layer-4 load balancer capability, which is included in the Linux kernel 2.6.0 released in 2003 or later, 
+to distribute incoming Transmission Control Protocol(TCP) traffic to 
+{\em real servers}\footnote{The term, {\em real servers} refers to worker servers that will respond to incoming traffic, 
+in the original literature\cite{Zhang2000}. We will also use this term in the similar way.}\cite{Zhang2000}. 
+For example, IPVS distributes incoming Hypertext Transfer Protocol(HTTP) traffic destined for a single destination IP address, 
+to multiple HTTP servers(e.g. Apache HTTP or nginx) running on multiple nodes in order to improve the performance of web services.
+Keepalived is a management program that performs health checking for {\em real servers}
+and manage IPVS balancing rules in the kernel accordingly.
+It is often used together with IPVS to facilitate ease of use.
+Although keepalived also supports Virtual Router Redundancy Protocol(VRRP)\cite{hinden2004virtual}, the authors plans to use ECMP to achive the redundancy.
+The controller is a daemon that periodically monitors the {\em pod} information on the master, 
+and performs various actions when such information changes.
+Kubernetes provides ingress controller framework as the Go Language(Golang) package to implement such controllers. 
+We have implemented a controller program that will feed {\em pod} state changes to keepalived 
+using this framework. 
+
+\begin{figure}
+\includegraphics[width=\columnwidth]{Figs/ipvs-ingress-schem}
+\caption{Implementation}
+\label{fig:IPVS-ingress-schem}
+\end{figure}
+
+The proposed load balancer needs to dynamically reconfigure the IPVS balancing rules whenever {\em pods} are created/deleted. 
+Figure~\ref{fig:IPVS-ingress-schem} is a schematic diagram to show the dynamic reconfiguration of the IPVS rules.
+The right part of the figure shows the enlarged view of one of the nodes where the load balancer pod(LB2) is deployed.
+Two daemon programs, controller and keepalived, run in the container inside the LB2 pod are illustrated.
+The keepalived manages Linux kernel's IPVS rules depending on the ipvs.conf configuration file.
+It is also capable of health-checking the liveliness of {\em real server}, 
+which is represented as a combination of the IP addresses and port numbers of the target {\em pods}. 
+If the health check to a {\em real server} fails, keepalived will remove that {\em real server} from the IPVS rules.
+
+The controller monitors information concerning the running {\em pods} of a service 
+in the Kubernetes cluster by consulting the apiserver running on the master.
+Whenever {\em pods} are created or deleted, the controller will automatically regenerate an appropriate ipvs.conf 
+and issue SIGHUP to keepalived.
+Then, keepalived will reload the ipvs.conf and modify the kernel's IPVS rules accordingly.
+The actual controller\cite{ktaka_ccmp_2017_826894} is implemented using the Kubernetes ingress controller\cite{K8sIngress2017} framework. 
+By importing existing Golang package, \enquote{k8s.io/ingress /core/pkg/ingress}, we could simplify the implementation, e.g. 
+120 lines of code.  
+
+Even though we could successfully containerised the load balancers and could deploy it as a part of web service,
+the performance we obtained was not equivalent that of scalable load balancers provided by the GCP.
+The next subsection will discuss ongoing as to how to improve the performance levels of the open source software load balancer using the novel XDP technology.
+
+\subsection{XDP loadbalancer}\label{XDP loadbalancer}
+
+The ipvs is very dependent on the Netfilter and Linux kernel's standard network stack.
+The IP packet processing of the Linux kernel has been claimed to be inefficient, and thus unable to meet the speed requirement of 10Gbps and above.
+Several alternative techniques, DPDK\cite{dpdkorg}, netmaps\cite{rizzo2012netmap}, PF\_RING\cite{deri2004improving} and Maglev\cite{eisenbud2016maglev} to increase the speed of the packet processing have been proposed.
+
+Most bypass the Linux kernel network stack and process the packet in user spaces.
+While they may improve the performance level in specific applications, they all have some issues regarding compatibility because of the bypass.
+Often they require dedicated physical NIC, other than the ones used for standard Linux services, e.g., ssh.
+%This table summarizes, pros and cons of the proposed techniques to improve the speed of the packet processing.
+
+%(Table)
+
+Recently, the Linux kernel introduced eXpress Data Plane (XDP)\cite{bertin2017xdp} a novel way to improve the traffic manipulation speed, while keeping compatibility with the other functions of the Linux standard networking stack.
+
+By using the XDP infrastructure, a user can write code that manipulates traffic in the very early stage of accepting the packets from outside the Linux box.
+It will enable a user to inject a bytecode into the kernel, let the kernel compile it into native machine code and then the code will manipulate the traffic only if it matches the predefined conditions.
+Traffic that did not match the conditions are pass to the Linux kernel's standard networking stack.
+
+We are now developing a software loadbalancer using XDP tecnnology.
+The design of such load balancer is also presented at the time of the presentation.
+
+\section{Experiments}\label{Experiments}
+
+We will now discuss the feasibility of the proposed load balancer by comparing 
+its performance with those of existing iptables DNAT and the Nginx based load balancers. 
+We conducted the performance measurements using the benchmark program called wrk\cite{Glozer2016}.
+The following subsections explain these in further detail. 
+
+\subsection{Benchmark method}
+
+\begin{figure}
+\includegraphics[width=\columnwidth]{Figs/benchmark-schem}
+\caption{Benchmark setup}
+\label{fig:benchmark-schem}
+\end{figure}
+
+We measured the performance of the load balancers using the wrk.
+Figure~\ref{fig:benchmark-schem} illustrates a schematic diagram of our experimental setup.
+Multiple {\em pods} are deployed on multiple nodes in the Kubernetes cluster. 
+In each {\em pod}, a Nginx web server that returns the IP address of the {\em pod} are running.
+We then set up the IPVS, iptables DNAT, and Nginx load balancers on one of the nodes(the top right node in the Figure~\ref{fig:benchmark-schem}). 
+
+We measured the throughput, Request/sec, of the web service running on the Kubernetes cluster as follows:
+The HTTP GET requests are sent out by the wrk on the client machine toward the nodes,
+using destination IP addresses and port numbers that are chosen based on the type of the load balancer on which the measurement is performed.
+The load balancer on the node then distributes the requests to the {\em pods}.
+Each {\em pod} will return HTTP responses to the load balancer, after which the load balancer returns them to the client.
+Based on the number of responses received by wrk on the client, 
+load balancer performance, in terms of Request/sec can be obtained. 
+
+\subsection{Benchmark results}
+
+Figure~\ref{fig:IPVS-iptables-nginx_2figs} compares the performance measurement results 
+among the IPVS, iptables DNAT, and Nginx load balancers
+with the condition of \enquote{(RSS, RPS) = (off on)}.
+The proposed IPVS load balancer exhibits almost equivalent performance as the existing iptables DNAT based load balancer. 
+The Nginx based load balancer shows no performance improvement even though the number of the Nginx web server {\em pods} is increased.
+It is understandable because the performance of the Nginx as a load balancer is expected to be similar to the performance as a web server.
+Figure~\ref{fig:latency_cdf_rps_40pods} compares Cumulative Distribution Function(CDF) of the load balancer latency at the constant load.
+The latencies are a little bit smaller for IPVS, however we consider the difference almost negligible.
+For example, the median value at 160K[req/s] load for IPVS and iptables DNAT are, 1.1 msec and 1.2 msec, respectively.
+So, we can conclude our proposed load balancer showed no performance degradation while providing potability.
+
+\begin{figure}
+\includegraphics[width=\columnwidth]{Figs/ipvs-iptables-nginx_2figs}
+\caption{IPVS and iptables comparison}
+\label{fig:IPVS-iptables-nginx_2figs}
+\end{figure}
+
+\begin{figure}
+\includegraphics[width=\columnwidth]{Figs/latency_cdf_rps_40pods}
+\caption{Latency cumulative distribution function}
+\label{fig:latency_cdf_rps_40pods}
+\end{figure}
+
+
+
+\section{Conclusions}\label{Conclusions}
+
+In this paper, we proposed a portable software load balancer for the container cluster systems that has the following features:
+1) Runnable as a linux container.
+2) Redundancy with ECMP technique.
+3) Implemented using XDP technology.
+Owr load balancer aims at facilitating migration of container clusters for web services.
+We implemented a containerized software load balancer that is run by Kubernetes as a part of container cluster, 
+using Linux kernel's IPVS, as a proof of portability.
+In order to discuss the feasibility of the proposed load balancer, we built 
+a Kubernetes cluster system and conducted performance measurements.
+Our experimental results indicate that the IPVS based load balancer in container improves the portability of 
+the Kubernetes cluster system while it shows the similar performance levels as the existing iptables DNAT based load balancer.
+%
+We also started to implement a novel software load balancer using recently introduced Linux kernel's XDP infrastructure.
+While it is in a preliminary stage of the development, essential functions and design issues have been already clarified.
+They will be presented at the time of the presentation.
+
+\section{Future work}\label{Future work}
+
+We leave the following for the future work:
+1) Performance measurement of XDP loadbalancer.
+2) Balancing algorithm especially consistent hashing.
+3) Containerization of XDP loadbalancer.
+These works are ongoing and will be presentaed when they are available.
+
